@@ -214,7 +214,10 @@ const VideoPlayer = forwardRef(({ onSystemMessage }, ref) => {
         onClick={togglePlayPause}
         muted={isMuted}
         loop={true}
+        playsInline
+        webkit-playsinline="true"
       />
+
 
       {buffering && (
         <div className="absolute inset-0 flex items-center justify-center bg-black bg-opacity-50">
