@@ -1,80 +1,87 @@
 // src/hooks/useRealtimeSync.js
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { ref, onValue, update } from 'firebase/database';
 import { realtimeDb } from '../lib/firebase';
 
 const USERNAME = import.meta.env.VITE_USER_NAME || 'User';
 
-export function useRealtimeSync() {
+export function useRealtimeSync(videoRef) {
   const [syncState, setSyncState] = useState({
-    videoId: null,
-    videoUrl: null,
+    videoUrl: '',
     isPlaying: false,
     currentTime: 0,
-    lastUpdatedBy: null,
+    lastUpdatedBy: '',
   });
 
   const isLocalUpdate = useRef(false);
-  const lastSeekTime = useRef(0);
 
-  // Subscribe to sync state
+  /** 
+   * Only call this when the user performs a seek action.
+   * NOT during playback.
+   */
+  const syncSeek = useCallback((newTime) => {
+    if (!videoRef.current) return;
+
+    isLocalUpdate.current = true;
+    update(ref(realtimeDb, 'syncState'), {
+      currentTime: newTime,
+      lastUpdatedBy: USERNAME,
+    });
+  }, [videoRef]);
+
+  /**
+   * Only call this when user presses play/pause.
+   */
+  const syncPlayPause = useCallback((isPlaying) => {
+    isLocalUpdate.current = true;
+    update(ref(realtimeDb, 'syncState'), {
+      isPlaying,
+      lastUpdatedBy: USERNAME,
+    });
+  }, []);
+
+  /**
+   * Sync video URL when changed (manual change).
+   */
+  const syncVideoUrl = useCallback((url) => {
+    isLocalUpdate.current = true;
+    update(ref(realtimeDb, 'syncState'), {
+      videoUrl: url,
+      currentTime: 0,
+      lastUpdatedBy: USERNAME,
+    });
+  }, []);
+
+  // Listen for realtime changes
   useEffect(() => {
     const syncRef = ref(realtimeDb, 'syncState');
-
     const unsubscribe = onValue(syncRef, (snapshot) => {
       const data = snapshot.val();
       if (!data) return;
 
-      // Skip own updates
+      // ignore our own writes
       if (isLocalUpdate.current) {
         isLocalUpdate.current = false;
         return;
       }
 
       setSyncState(data);
+
+      // Apply remote playback changes
+      const video = videoRef.current;
+      if (!video) return;
+
+      if (data.isPlaying && video.paused) video.play();
+      if (!data.isPlaying && !video.paused) video.pause();
+
+      // Apply remote seek ONLY if time drift is large (>3 sec)
+      if (Math.abs(video.currentTime - data.currentTime) > 3) {
+        video.currentTime = data.currentTime;
+      }
     });
 
     return () => unsubscribe();
-  }, []);
+  }, [videoRef]);
 
-  const updateSync = useCallback(async (updates) => {
-    isLocalUpdate.current = true;
-    const syncRef = ref(realtimeDb, 'syncState');
-    await update(syncRef, {
-      ...updates,
-      lastUpdatedBy: USERNAME,
-      lastUpdatedAt: Date.now(),
-    });
-  }, []);
-
-  // Play / Pause
-  const syncPlay = useCallback(() => updateSync({ isPlaying: true }), [updateSync]);
-  const syncPause = useCallback(() => updateSync({ isPlaying: false }), [updateSync]);
-
-  // Seek (throttled)
-  const syncSeek = useCallback((time) => {
-    const now = Date.now();
-    if (now - lastSeekTime.current > 300) {
-      updateSync({ currentTime: time });
-      lastSeekTime.current = now;
-    }
-  }, [updateSync]);
-
-  // Change video
-  const syncVideoChange = useCallback((videoId, videoUrl) => {
-    updateSync({
-      videoId,
-      videoUrl,
-      currentTime: 0,
-      isPlaying: false,
-    });
-  }, [updateSync]);
-
-  return {
-    syncState,
-    syncPlay,
-    syncPause,
-    syncSeek,
-    syncVideoChange,
-  };
+  return { syncState, syncSeek, syncPlayPause, syncVideoUrl };
 }
